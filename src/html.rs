@@ -92,9 +92,13 @@ where
     }
 }
 
+pub type URLManip = dyn FnMut(&str) -> CowStr;
+
 struct HtmlWriter<'a, I, W> {
     /// Iterator supplying events.
     iter: I,
+    next_event: Option<Event<'a>>,
+    url_manip: Option<Box<URLManip>>,
 
     /// Writer to write to.
     writer: W,
@@ -117,6 +121,21 @@ where
         Self {
             iter,
             writer,
+            next_event: None,
+            url_manip: None,
+            end_newline: true,
+            table_state: TableState::Head,
+            table_alignments: vec![],
+            table_cell_index: 0,
+            numbers: HashMap::new(),
+        }
+    }
+    fn new_manip(iter: I, writer: W, url_manip: Box<URLManip>) -> Self {
+        Self {
+            iter,
+            writer,
+            next_event: None,
+            url_manip: Some(url_manip),
             end_newline: true,
             table_state: TableState::Head,
             table_alignments: vec![],
@@ -143,7 +162,9 @@ where
     }
 
     pub fn run(mut self) -> io::Result<()> {
-        while let Some(event) = self.iter.next() {
+        self.next_event = self.iter.next();
+        while let (Some(event), next_event) = (self.next_event, self.iter.next()) {
+            self.next_event = next_event;
             match event {
                 Start(tag) => {
                     self.start_tag(tag)?;
@@ -209,10 +230,18 @@ where
             Tag::Heading(level) => {
                 if self.end_newline {
                     self.end_newline = false;
-                    write!(&mut self.writer, "<h{}>", level)
+                    write!(&mut self.writer, "<h{}", level)?;
                 } else {
-                    write!(&mut self.writer, "\n<h{}>", level)
+                    write!(&mut self.writer, "\n<h{}", level)?;
                 }
+                if let Some(event) = &self.next_event {
+                    if let Text(text) = event {
+                        write!(&mut self.writer, " id=\"")?;
+                        escape_html(&mut self.writer, text)?;
+                        write!(&mut self.writer, "\"")?;
+                    }
+                }
+                write!(&mut self.writer, ">")
             }
             Tag::Table(alignments) => {
                 self.table_alignments = alignments;
@@ -312,7 +341,10 @@ where
             }
             Tag::Link(_link_type, dest, title) => {
                 self.write("<a href=\"")?;
-                escape_href(&mut self.writer, &dest)?;
+                match &mut self.url_manip {
+                    Some(fup) => escape_href(&mut self.writer, &(fup(&dest)))?,
+                    None => escape_href(&mut self.writer, &dest)?,
+                };
                 if !title.is_empty() {
                     self.write("\" title=\"")?;
                     escape_html(&mut self.writer, &title)?;
@@ -517,4 +549,12 @@ where
     W: Write,
 {
     HtmlWriter::new(iter, WriteWrapper(writer)).run()
+}
+
+pub fn write_html_manip<'a, I, W>(writer: W, iter: I, url_manip: Box<URLManip>) -> io::Result<()>
+where
+    I: Iterator<Item = Event<'a>>,
+    W: Write,
+{
+    HtmlWriter::new_manip(iter, WriteWrapper(writer), url_manip).run()
 }
