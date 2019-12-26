@@ -94,6 +94,26 @@ where
 
 pub type URLManip = dyn FnMut(&str) -> CowStr;
 
+// approximate https://docs.gitlab.com/ee/user/markdown.html#header-ids-and-links
+fn slugify<W>(writer: &mut W, text: &str) -> io::Result<()>
+where
+    W: StrWrite,
+{
+    let slugged: String = text
+        .split_whitespace()
+        .map(|s| {
+            s.to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
+        .filter(|s| s.len() > 0)
+        .collect::<Vec<String>>()
+        .join("-");
+
+    writer.write_str(&slugged)
+}
+
 struct HtmlWriter<'a, I, W> {
     /// Iterator supplying events.
     iter: I,
@@ -237,7 +257,7 @@ where
                 if let Some(event) = &self.next_event {
                     if let Text(text) = event {
                         write!(&mut self.writer, " id=\"")?;
-                        escape_html(&mut self.writer, text)?;
+                        slugify(&mut self.writer, text)?;
                         write!(&mut self.writer, "\"")?;
                     }
                 }
